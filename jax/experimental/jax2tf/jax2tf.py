@@ -21,7 +21,7 @@ import operator
 import os
 import re
 import threading
-from typing import Any, Callable, Optional, Union, cast
+from typing import Any, Callable, Optional, Tuple, Union, cast
 import warnings
 
 from absl import logging
@@ -1450,6 +1450,7 @@ tf_not_yet_impl = [
     "global_array_to_host_local_array",
     "host_local_array_to_global_array",
     "call_exported",
+    "zeta",
     # Not high priority?
     "after_all",
     "all_to_all",
@@ -1813,11 +1814,11 @@ def _not(x):
   Numpy and JAX support bitwise not for booleans by applying a logical not!
   This means that applying bitwise_not yields an unexpected result:
     jnp.bitwise_not(jnp.array([True, False]))
-    >> DeviceArray([False,  True], dtype=bool)
+    >> Array([False,  True], dtype=bool)
 
   if you assume that booleans are simply casted to integers.
     jnp.bitwise_not(jnp.array([True, False]).astype(np.int32)).astype(bool)
-    >> DeviceArray([True,  True], dtype=bool)
+    >> Array([True,  True], dtype=bool)
   """
   if x.dtype == tf.bool:
     return tf.logical_not(x)
@@ -2064,6 +2065,9 @@ def _dot_general(lhs, rhs, *, dimension_numbers,
   #   raise NotImplementedError(
   #     "dot_general with different lhs_dtype and rhs_dtype is not supported "
   #     "in non-native serialization")
+  lhs, rhs, convert_result = _dot_general_convert_to_common_dtype(
+    lhs, _in_avals[0], rhs, _in_avals[1], _out_aval)
+
   (lhs_contracting, rhs_contracting), (lhs_batch, rhs_batch) = dimension_numbers
   dnums_proto = xla_data_pb2.DotDimensionNumbers()
   dnums_proto.lhs_contracting_dimensions.extend(lhs_contracting)
@@ -2078,6 +2082,7 @@ def _dot_general(lhs, rhs, *, dimension_numbers,
       precision_config_proto,
       preferred_element_type=preferred_element_type,
       use_v2=True)
+  res = convert_result(res)
   if _WRAP_JAX_JIT_WITH_TF_FUNCTION:
     res = tf.stop_gradient(res)  # See #7839
   return res
@@ -2085,6 +2090,25 @@ def _dot_general(lhs, rhs, *, dimension_numbers,
 
 tf_impl_with_avals[lax.dot_general_p] = _dot_general
 
+def _dot_general_convert_to_common_dtype(
+  lhs: TfVal, lhs_aval: core.ShapedArray,
+  rhs: TfVal, rhs_aval: core.ShapedArray,
+  out_aval: core.ShapedArray) -> Tuple[TfVal, TfVal, Callable[[TfVal], TfVal]]:
+  # Returns the converted lhs, rhs, and the converter for the result.
+  # tfxla.dot_general does not handle arguments of different types.
+  # We convert the arguments and the result.
+  # Use native serialization for a more JAX-native behavior.
+  if lhs_aval.dtype != rhs_aval.dtype:
+
+    common_dtype = dtypes.result_type(lhs_aval, rhs_aval)
+    if common_dtype != lhs_aval.dtype:
+      lhs = _convert_element_type(lhs, new_dtype=common_dtype)
+    if common_dtype != rhs_aval.dtype:
+      rhs = _convert_element_type(rhs, new_dtype=common_dtype)
+    convert_result = lambda res: _convert_element_type(res, new_dtype=out_aval.dtype)
+  else:
+    convert_result = lambda res: res
+  return (lhs, rhs, convert_result)
 
 def _broadcast_in_dim(operand, *, shape, broadcast_dimensions,
                       _in_avals: Sequence[core.ShapedArray],

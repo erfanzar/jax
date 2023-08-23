@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import enum
 import math
 import operator as op
 import numpy as np
@@ -48,6 +49,13 @@ Shape = tuple[int, ...]
 Device = xc.Device
 Index = tuple[slice, ...]
 PRNGKeyArrayImpl = Any  # TODO(jakevdp): fix cycles and import this.
+
+
+# Mirror of dlpack.h enum
+class DLDeviceType(enum.IntEnum):
+  kDLCPU = 1
+  kDLCUDA = 2
+  kDLROCM = 10
 
 
 class Shard:
@@ -357,14 +365,55 @@ class ArrayImpl(basearray.Array):
 
   @functools.cached_property
   def is_fully_addressable(self) -> bool:
+    """Is this Array fully addressable?
+
+    A jax.Array is fully addressable if the current process can address all of
+    the devices named in the :class:`Sharding`. ``is_fully_addressable`` is
+    equivalent to "is_local" in multi-process JAX.
+
+    Note that fully replicated is not equal to fully addressable i.e.
+    a jax.Array which is fully replicated can span across multiple hosts and is
+    not fully addressable.
+    """
     return self.sharding.is_fully_addressable
 
   def __array__(self, dtype=None, context=None):
     return np.asarray(self._value, dtype=dtype)
 
-  def __dlpack__(self):
+  def __dlpack__(self, stream: int | None = None):
+    if len(self._arrays) != 1:
+      raise ValueError("__dlpack__ only supported for unsharded arrays.")
     from jax._src.dlpack import to_dlpack  # pylint: disable=g-import-not-at-top
-    return to_dlpack(self)
+    return to_dlpack(self, stream=stream)
+
+  def __dlpack_device__(self) -> tuple[DLDeviceType, int]:
+    if len(self._arrays) != 1:
+      raise ValueError("__dlpack__ only supported for unsharded arrays.")
+
+    if self.platform() == "cpu":
+      return DLDeviceType.kDLCPU, 0
+
+    elif self.platform() == "gpu":
+      platform_version = self.device().client.platform_version
+      if "cuda" in platform_version:
+        dl_device_type = DLDeviceType.kDLCUDA
+      elif "rocm" in platform_version:
+        dl_device_type = DLDeviceType.kDLROCM
+      else:
+        raise ValueError("Unknown GPU platform for __dlpack__: "
+                         f"{platform_version}")
+
+      local_hardware_id = self.device().local_hardware_id
+      if local_hardware_id is None:
+        raise ValueError("Couldn't get local_hardware_id for __dlpack__")
+
+      return dl_device_type, local_hardware_id
+
+    else:
+      raise ValueError(
+          "__dlpack__ device only supported for CPU and GPU, got platform: "
+          f"{self.platform()}"
+      )
 
   def __reduce__(self):
     fun, args, arr_state = self._value.__reduce__()  # type: ignore
@@ -610,9 +659,8 @@ def make_array_from_single_device_arrays(
 ) -> ArrayImpl:
   r"""Returns a ``jax.Array`` from a sequence of ``jax.Array``\s on a single device.
 
-  ``jax.Array`` on a single device is analogous to a ``DeviceArray``. You can use
-  this function if you have already ``jax.device_put`` the value on a single
-  device and want to create a global Array. The smaller ``jax.Array``\s should be
+  You can use this function if you have already ``jax.device_put`` the value on
+  a single device and want to create a global Array. The smaller ``jax.Array``\s should be
   addressable and belong to the current process.
 
   Args:
@@ -663,8 +711,7 @@ def make_array_from_single_device_arrays(
   aval = core.ShapedArray(shape, arrays[0].dtype, weak_type=False)
   if dtypes.issubdtype(aval.dtype, dtypes.extended):
     return aval.dtype._rules.make_sharded_array(aval, sharding, arrays, committed=True)
-  # TODO(phawkins): ideally the cast() could be checked. Revisit this after
-  # removing DeviceArray.
+  # TODO(phawkins): ideally the cast() could be checked.
   return ArrayImpl(aval, sharding, cast(Sequence[ArrayImpl], arrays),
                    committed=True)
 
@@ -677,9 +724,8 @@ api_util._shaped_abstractify_handlers[ArrayImpl] = op.attrgetter('aval')
 basearray.Array.register(ArrayImpl)
 
 
-def _array_mlir_constant_handler(val, canonicalize_types=True):
-  return mlir.ir_constants(val._value,
-                           canonicalize_types=canonicalize_types)
+def _array_mlir_constant_handler(val):
+  return mlir.ir_constants(val._value)
 mlir.register_constant_handler(ArrayImpl, _array_mlir_constant_handler)
 
 

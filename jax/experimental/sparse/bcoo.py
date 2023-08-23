@@ -385,12 +385,12 @@ def bcoo_extract(sparr: BCOO, arr: ArrayLike, *, assume_unique: bool | None = No
   """
   if not isinstance(sparr, BCOO):
     raise ValueError(f"First argument to bcoo_extract should be a BCOO array. Got {type(sparr)=}")
-  arr = jnp.asarray(arr)
-  if arr.shape != sparr.shape:
-    raise ValueError(f"shape mismatch: {sparr.shape=} {arr.shape=}")
+  a = jnp.asarray(arr)
+  if a.shape != sparr.shape:
+    raise ValueError(f"shape mismatch: {sparr.shape=} {a.shape=}")
   if assume_unique is None:
     assume_unique = sparr.unique_indices
-  data = _bcoo_extract(sparr.indices, arr, assume_unique=assume_unique)
+  data = _bcoo_extract(sparr.indices, a, assume_unique=assume_unique)
   return BCOO((data, sparr.indices), **sparr._info._asdict())
 
 
@@ -2505,7 +2505,7 @@ class BCOO(JAXSparse):
   @classmethod
   def fromdense(cls, mat: Array, *, nse: int | None = None, index_dtype: DTypeLike = np.int32,
                 n_dense: int = 0, n_batch: int = 0) -> BCOO:
-    """Create a BCOO array from a (dense) :class:`DeviceArray`."""
+    """Create a BCOO array from a (dense) :class:`~jax.Array`."""
     return bcoo_fromdense(
       mat, nse=nse, index_dtype=index_dtype, n_dense=n_dense, n_batch=n_batch)
 

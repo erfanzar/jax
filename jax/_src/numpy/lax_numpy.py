@@ -203,7 +203,6 @@ finfo = dtypes.finfo
 
 dtype = np.dtype
 can_cast = dtypes.can_cast
-issubsctype = dtypes.issubsctype
 promote_types = dtypes.promote_types
 
 ComplexWarning = NumpyComplexWarning
@@ -603,7 +602,7 @@ def rot90(m: ArrayLike, k: int = 1, axes: tuple[int, int] = (0, 1)) -> Array:
 
 
 @util._wraps(np.flip, lax_description=_ARRAY_VIEW_DOC)
-def flip(m: ArrayLike, axis: int | tuple[int, ...] | None = None) -> Array:
+def flip(m: ArrayLike, axis: int | Sequence[int] | None = None) -> Array:
   util.check_arraylike("flip", m)
   return _flip(asarray(m), reductions._ensure_optional_axes(axis))
 
@@ -1740,7 +1739,7 @@ Unlike numpy, JAX "function" mode's argument (which is another function) should 
 the modified array. This is because Jax arrays are immutable.
 (In numpy, "function" mode's argument should modify a rank 1 array in-place.)
 """)
-def pad(array: ArrayLike, pad_width: PadValueLike[int],
+def pad(array: ArrayLike, pad_width: PadValueLike[int | Array | np.ndarray],
         mode: str | Callable[..., Any] = "constant", **kwargs) -> Array:
   util.check_arraylike("pad", array)
   pad_width = _broadcast_to_pairs(pad_width, ndim(array), "pad_width")
@@ -1869,7 +1868,6 @@ def vstack(tup: np.ndarray | Array | Sequence[ArrayLike],
   else:
     arrs = [atleast_2d(m) for m in tup]
   return concatenate(arrs, axis=0, dtype=dtype)
-row_stack = vstack
 
 
 @util._wraps(np.hstack)
